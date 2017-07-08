@@ -50,6 +50,7 @@ def write_some_data(context, filepath, textual):
             binary_write_string(f, group.name)
 
         material = group.materials[0]
+        material = bpy.data.materials[material.name]
         if material is None:
             material_index = -1
         else:
@@ -113,14 +114,60 @@ def write_some_data(context, filepath, textual):
             if texture.image is not None:
                 if texture.image.filepath is not None:
                     texture_image = bpy.path.basename(texture.image.filepath)
+        
+        ambient = material.ambient*51 #Hackish to say the least
+        
+        diffuse = list(material.diffuse_color)
+        if(diffuse[0]>0.0 or diffuse[1]>0.0 or diffuse[2]>0.0):
+            diffuse[0] = diffuse[0]*material.diffuse_intensity
+            diffuse[1] = diffuse[1]*material.diffuse_intensity
+            diffuse[2] = diffuse[2]*material.diffuse_intensity
+        else:
+            #Assume safe defaults
+            diffuse = [204/255, 204/255, 204/255]
+        
+        specular = list(material.specular_color)
+        specular[0] = specular[0]*material.specular_intensity*255
+        specular[1] = specular[1]*material.specular_intensity*255
+        specular[2] = specular[2]*material.specular_intensity*255
+        emissive = diffuse[:]
+        emissive[0] = emissive[0]*material.emit
+        emissive[1] = emissive[1]*material.emit
+        emissive[2] = emissive[2]*material.emit
+        shininess = material.specular_intensity*128.0
+        transparency = material.alpha
+        
         if textual:
             f.write("%s\n" % texture_image)
+            f.write("a %f\n" % ambient)
+            line = "d {d[0]} {d[1]} {d[2]}\n"
+            line = line.format(d=diffuse)
+            f.write(line)
+            line = "s {s[0]} {s[1]} {s[2]}\n"
+            line = line.format(s=specular)
+            f.write(line)
+            line = "e {e[0]} {e[1]} {e[2]}\n"
+            line = line.format(e=emissive)
+            f.write(line)
+            f.write("sh %f\n" % shininess)
+            f.write("t %f\n" % transparency)
+            
         else:
             binary_write_string(f, texture_image)
+            f.write(struct.pack("<1f", ambient))
+            f.write(struct.pack("<3f", *diffuse))
+            f.write(struct.pack("<3f", *specular))
+            f.write(struct.pack("<3f", *emissive))
+            f.write(struct.pack("<1f", shininess))
+            f.write(struct.pack("<1f", transparency))
         
     
     f.close()
-
+    
+    #Clean up
+    for group in groups:
+        bpy.data.meshes.remove(group)
+    
     return {'FINISHED'}
 
 
