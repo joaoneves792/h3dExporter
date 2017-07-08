@@ -32,7 +32,9 @@ def write_some_data(context, filepath, textual):
         
     for obj in scene.objects:
         if obj.type == 'MESH':
-            group = obj.to_mesh(scene, True, 'PREVIEW')
+            world_matrix = obj.matrix_world
+            group = obj.to_mesh(scene, True, 'RENDER')
+            group.transform(world_matrix)
             mesh_triangulate(group)
             group.calc_normals_split()
             groups.append(group)
