@@ -2,11 +2,11 @@ import bpy
 import struct
 
 def binary_write_string(f, string):
-        count = len(string)
-        f.write(struct.pack("<b", count))
-        sb = bytes(string, 'ascii')
-        final_sb = sb[:count] 
-        f.write(final_sb)
+    count = len(string)
+    f.write(struct.pack("<b", count))
+    sb = bytes(string, 'ascii')
+    final_sb = sb[:count] 
+    f.write(final_sb)
 
 def mesh_triangulate(me):
     import bmesh
@@ -28,10 +28,11 @@ def write_some_data(context, filepath, textual):
 
     scene = bpy.context.scene
     groups = []
-    
+    materials = []
+        
     for obj in scene.objects:
         if obj.type == 'MESH':
-            group = obj.to_mesh(scene, True, 'RENDER')
+            group = obj.to_mesh(scene, True, 'PREVIEW')
             mesh_triangulate(group)
             group.calc_normals_split()
             groups.append(group)
@@ -46,6 +47,21 @@ def write_some_data(context, filepath, textual):
         else:
             binary_write_string(f, group.name)
 
+        material = group.materials[0]
+        if material is None:
+            material_index = -1
+        else:
+            if material not in materials:
+                materials.append(material)
+                material_index = len(materials)-1
+            else:
+                material_index = materials.index(material)
+                
+        if textual:
+            f.write("%d\n" % material_index)
+        else:
+            f.write(struct.pack("<1i", material_index))
+            
         vertices = group.vertices
         if textual:
             f.write("%d\n" % len(group.polygons))
@@ -66,7 +82,7 @@ def write_some_data(context, filepath, textual):
         else:
             f.write(struct.pack("<1i", len(loops)))
     
-        for loop in loops:
+        for i, loop in enumerate(loops):
             if textual:
                 line = "v {v.x} {v.y} {v.z}\n"
                 line = line.format(v=vertices[loop.vertex_index].co)
@@ -74,14 +90,33 @@ def write_some_data(context, filepath, textual):
                 line = "n {n.x} {n.y} {n.z}\n"
                 line = line.format(n=loop.normal)
                 f.write(line)
-                line = "t {t[0]} {t[1]}\n"
-                line = line.format(t=group.uv_layers.active.data[loop.index].uv)
+                line = "t {u} {v}\n"
+                line = line.format(u=group.uv_layers.active.data[i].uv[0], v=1-group.uv_layers.active.data[i].uv[1])
                 f.write(line)
             else:
                 f.write(struct.pack("<3f", *vertices[loop.vertex_index].co))
                 f.write(struct.pack("<3f", *loop.normal))
-                f.write(struct.pack("<2f", *group.uv_layers.active.data[loop.index].uv))
+                f.write(struct.pack("<2f", group.uv_layers.active.data[i].uv[0], 1-group.uv_layers.active.data[i].uv[1]))
 
+    #Handle the materials
+    if textual:
+        f.write("%d\n" % len(materials))
+    else:
+        f.write(struct.pack("<1i", len(materials)))
+        
+    for material in materials:
+        texture_image = ""
+        texture = material.texture_slots[0].texture
+        if texture is not None:
+            if texture.image is not None:
+                if texture.image.filepath is not None:
+                    texture_image = bpy.path.basename(texture.image.filepath)
+        if textual:
+            f.write("%s\n" % texture_image)
+        else:
+            binary_write_string(f, texture_image)
+        
+    
     f.close()
 
     return {'FINISHED'}
