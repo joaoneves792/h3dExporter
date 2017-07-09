@@ -1,5 +1,7 @@
 import bpy
 import struct
+from mathutils import Matrix
+from math import pi
 
 def binary_write_string(f, string):
     count = len(string)
@@ -15,6 +17,77 @@ def mesh_triangulate(me):
     bmesh.ops.triangulate(bm, faces=bm.faces)
     bm.to_mesh(me)
     bm.free()
+    
+def matrix_difference(mat_src, mat_dst):
+    mat_dst_inv = mat_dst.inverted()
+    return mat_dst_inv * mat_src
+
+def joint_correction(value):
+    return (-value[0], value[2], value[1])
+
+
+class H3dMesh:
+    def __init__(self):
+        self.mesh = None
+        self.vertex_groups = []
+        self.animated = False
+        self.blender_armature = None
+        self.h3d_armature = None
+
+class H3dJoint:
+    def __init__(self):
+        self.name = None
+        self.parentName = None
+        self.parentIndex = -1
+        self.matrix = None
+        self.rotation = [0,0,0] #Euler
+        self.position = [0,0,0]
+        self.index = 0
+
+class H3dArmature:
+    def __init__(self):
+        self.name = ""
+        self.blender_armature = None
+        self.joints_dic = {}
+        self.joints = []
+
+def prepare_armatures(armatures_list):
+    base_bone_correction = Matrix.Rotation(pi / 2, 4, 'Z')
+    
+    for armature in armatures_list:
+        base_matrix = armature.blender_armature.matrix_basis
+        bones = list(armature.blender_armature.data.bones)
+        for bone in bones:
+            joint = H3dJoint()
+            joint.name = bone.name
+            parent_bone = bone.parent
+            if parent_bone is not None:
+                joint.parentName = parent_bone.name
+                joint.matrix = matrix_difference(
+                                    base_matrix * bone.matrix_local,
+                                    base_matrix * parent_bone.matrix_local)
+            else:
+                joint.parentName = ""
+                joint.matrix = base_bone_correction * base_matrix * bone.matrix_local
+
+            joint.position = joint_correction(joint.matrix.to_translation())
+            joint.rotation = joint_correction(joint.matrix.to_euler("XZY"))
+            armature.joints_dic[joint.name] = joint
+
+        #Create an oredered list and assign the parent indexes        
+        armature.joints = list(armature.joints_dic.values())
+        for joint in armature.joints:
+            for i, other_joint in enumerate(armature.joints):
+                armature.joints_dic[other_joint.name].index = i
+                if(joint.parentName == other_joint.name):
+                    joint.parentIndex = i
+                    
+def find_joint_index(armature, vertex_group):
+    try:
+        return armature.joints_dic[vertex_group.name].index
+    except KeyError: #We might get vertex_groups belonging to key shapes (ditch those)
+        return -1
+    
 
 def write_some_data(context, filepath, textual):
         
@@ -29,15 +102,43 @@ def write_some_data(context, filepath, textual):
     scene = bpy.context.scene
     groups = []
     materials = []
+    armatures = []
         
     for obj in scene.objects:
         if obj.type == 'MESH':
+            h3d_mesh = H3dMesh()
+            
+            h3d_mesh.vertex_groups = obj.vertex_groups
+            
             world_matrix = obj.matrix_world
-            group = obj.to_mesh(scene, True, 'RENDER')
-            group.transform(world_matrix)
-            mesh_triangulate(group)
-            group.calc_normals_split()
-            groups.append(group)
+            mesh = obj.to_mesh(scene, True, 'RENDER')
+            mesh.transform(world_matrix)
+            mesh_triangulate(mesh)
+            mesh.calc_normals_split()
+            h3d_mesh.mesh = mesh
+            
+            armature = obj.find_armature()
+            if armature is not None:
+                h3d_mesh.animated = True
+                h3d_mesh.blender_armature = armature.name
+                                
+            groups.append(h3d_mesh)
+            
+        if obj.type == 'ARMATURE':
+            armature = H3dArmature()
+            armature.name = obj.name
+            armature.blender_armature = obj
+            armatures.append(armature)
+            
+    prepare_armatures(armatures)
+    for group in groups:
+        if not group.animated:
+            continue
+        for armature in armatures:
+            if group.blender_armature == armature.name:
+                group.h3d_armature = armature
+
+    
     if textual:
         f.write("%d\n" % len(groups))
     else:
@@ -45,11 +146,11 @@ def write_some_data(context, filepath, textual):
     
     for group in groups:
         if textual:
-            f.write("%s\n" % group.name)
+            f.write("%s\n" % group.mesh.name)
         else:
-            binary_write_string(f, group.name)
+            binary_write_string(f, group.mesh.name)
 
-        material = group.materials[0]
+        material = group.mesh.materials[0]
         material = bpy.data.materials[material.name]
         if material is None:
             material_index = -1
@@ -65,13 +166,13 @@ def write_some_data(context, filepath, textual):
         else:
             f.write(struct.pack("<1i", material_index))
             
-        vertices = group.vertices
+        vertices = group.mesh.vertices
         if textual:
-            f.write("%d\n" % len(group.polygons))
+            f.write("%d\n" % len(group.mesh.polygons))
         else:
-            f.write(struct.pack("<1i", len(group.polygons)))
+            f.write(struct.pack("<1i", len(group.mesh.polygons)))
             
-        for triangle in group.polygons:
+        for triangle in group.mesh.polygons:
             if textual:
                 line = "tri {l[0]} {l[1]} {l[2]}\n"
                 line = line.format(l=triangle.loop_indices)
@@ -79,13 +180,28 @@ def write_some_data(context, filepath, textual):
             else:
                 f.write(struct.pack("<3i", *triangle.loop_indices))
         
-        loops = group.loops
+        loops = group.mesh.loops
         if textual:
             f.write("%d\n" % len(loops))
         else:
             f.write(struct.pack("<1i", len(loops)))
     
         for i, loop in enumerate(loops):
+            vertex_groups_info = sorted(vertices[loop.vertex_index].groups, key=lambda vg:vg.weight, reverse=True) #TODO Dont forget to normalize the weights (sum must be 1)
+            #Convert the vertex_group index into an index for our joint arrays
+            bones_index_weight = []
+            for vg_info in vertex_groups_info:
+                    index = find_joint_index(group.h3d_armature, group.vertex_groups[vg_info.group])
+                    if -1 == index:
+                        continue    #This vertex_group is not part of the armature
+                    weight = vg_info.weight
+                    bones_index_weight.append((index, weight))
+                    
+            #Fill the remainder bone slots with -1
+            if len(vertex_groups_info) < 3:
+                for c in range(len(vertex_groups_info), 3):
+                    bones_index_weight.append((-1, 0.0))
+            
             if textual:
                 line = "v {v.x} {v.y} {v.z}\n"
                 line = line.format(v=vertices[loop.vertex_index].co)
@@ -94,13 +210,33 @@ def write_some_data(context, filepath, textual):
                 line = line.format(n=loop.normal)
                 f.write(line)
                 line = "t {u} {v}\n"
-                line = line.format(u=group.uv_layers.active.data[i].uv[0], v=1-group.uv_layers.active.data[i].uv[1])
+                line = line.format(u=group.mesh.uv_layers.active.data[i].uv[0], v=1-group.mesh.uv_layers.active.data[i].uv[1])
                 f.write(line)
+                line = "b {j} {w}\n"
+                line = line.format(j=bones_index_weight[0][0], w=bones_index_weight[0][1])
+                f.write(line)
+
             else:
                 f.write(struct.pack("<3f", *vertices[loop.vertex_index].co))
                 f.write(struct.pack("<3f", *loop.normal))
-                f.write(struct.pack("<2f", group.uv_layers.active.data[i].uv[0], 1-group.uv_layers.active.data[i].uv[1]))
+                f.write(struct.pack("<2f", group.mesh.uv_layers.active.data[i].uv[0], 1-group.mesh.uv_layers.active.data[i].uv[1]))
+                f.write(struct.pack("<1i1f", *bones_index_weight[0]))
 
+        #declare the armature                    
+        if not group.animated:
+            if textual:
+                f.write("Animated:False\n")
+            else:
+                f.write(struct.pack("<1b", 0))
+        else:
+            if textual:
+                f.write("Animated:True\n")
+                f.write("%s\n" % group.h3d_armature.name)
+            else:
+                f.write(struct.pack("<1b", 1))
+                binary_write_string(f, group.h3d_armature.name)
+
+        
     #Handle the materials
     if textual:
         f.write("%d\n" % len(materials))
@@ -166,7 +302,7 @@ def write_some_data(context, filepath, textual):
     
     #Clean up
     for group in groups:
-        bpy.data.meshes.remove(group)
+        bpy.data.meshes.remove(group.mesh)
     
     return {'FINISHED'}
 
