@@ -17,6 +17,8 @@ bpy.types.Object.is_keyframe = is_keyframe
 ###############################################
 
 
+correction_matrix = Matrix.Rotation(-pi/2, 4, 'X')
+
 def binary_write_string(f, string):
     count = len(string)
     f.write(struct.pack("<b", count))
@@ -35,6 +37,16 @@ def mesh_triangulate(me):
 def matrix_difference(mat_src, mat_dst):
     mat_dst_inv = mat_dst.inverted()
     return mat_dst_inv * mat_src
+
+#def joint_correction(value):
+#    return (value[2], value[1], -value[0])
+
+
+#def joint_correction(value):
+#    return (value[1], value[0], value[1])
+
+#def joint_correction(value):
+#    return (-value[0], value[2], value[1])
 
 def joint_correction(value):
     return (-value[0], value[2], value[1])
@@ -84,10 +96,20 @@ def fill_keyframes(scene, h3d_armature):
             h3d_joint = find_joint_by_name(h3d_armature, pbone.name)
             keyframe = H3dKeyframe()
             keyframe.frame = f
-            matrix = base_bone_correction * blender_armature.convert_space(pose_bone=pbone, matrix=pbone.matrix, from_space='POSE', to_space='WORLD') #matrix is absolute?
+            #matrix = base_bone_correction * blender_armature.convert_space(pose_bone=pbone, matrix=pbone.matrix, from_space='POSE', to_space='WORLD') #matrix is absolute?
+            #matrix = blender_armature.convert_space(pose_bone=pbone, matrix=pbone.matrix, from_space='POSE', to_space='LOCAL_WITH_PARENT')
+            matrix = blender_armature.convert_space(pose_bone=pbone, matrix=pbone.matrix, from_space='POSE', to_space='LOCAL')
+            #if pbone.parent:
+            #    parent_matrix = blender_armature.convert_space(pose_bone=pbone.parent, matrix=pbone.parent.matrix, from_space='POSE', to_space='LOCAL')
+            #    matrix = matrix_difference(matrix, parent_matrix)
+            #matrix = blender_armature.convert_space(pose_bone=pbone, matrix=pbone.matrix, to_space='LOCAL')
+            #matrix =  matrix_difference(pbone.matrix, blender_armature.matrix_basis)
             
-            keyframe.position = joint_correction(matrix.to_translation())
-            keyframe.rotation = joint_correction(matrix.to_euler("XZY"))
+            #keyframe.position = matrix.to_translation()
+            #keyframe.rotation = joint_correction(matrix.to_euler("XZY"))
+            keyframe.position = matrix.to_translation()
+            keyframe.rotation = matrix.to_euler("XYZ") #ZYX ZXY XYZ XZY YXZ YZX
+ 
             h3d_joint.keyframes.append(keyframe)
 
 def write_armature(f, textual, armature):
@@ -115,10 +137,11 @@ def write_armature(f, textual, armature):
             f.write(struct.pack("<3f", *joint.position))
             f.write(struct.pack("<3f", *joint.rotation))
             f.write(struct.pack("<1i", joint.parentIndex))
+            f.write(struct.pack("<1i", len(joint.keyframes)))
+            for keyframe in joint.keyframes:
+                f.write(struct.pack("<1i3f3f", keyframe.frame, *keyframe.position, *keyframe.rotation))
 
 def prepare_armatures(armatures_list):
-    base_bone_correction = Matrix.Rotation(pi / 2, 4, 'Z')
-    
     for armature in armatures_list:
         base_matrix = armature.blender_armature.matrix_basis
         bones = list(armature.blender_armature.data.bones)
@@ -128,18 +151,16 @@ def prepare_armatures(armatures_list):
             parent_bone = bone.parent
             if parent_bone is not None:
                 joint.parentName = parent_bone.name
-                joint.matrix = base_bone_correction * base_matrix * bone.matrix_local #matrix is absolute?
-                """
-                joint.matrix = matrix_difference(
-                                    base_matrix * bone.matrix_local,
-                                    base_matrix * parent_bone.matrix_local)
-                """
             else:
                 joint.parentName = ""
-                joint.matrix = base_bone_correction * base_matrix * bone.matrix_local
+            joint.matrix = correction_matrix * base_matrix * bone.matrix_local
 
-            joint.position = joint_correction(joint.matrix.to_translation())
-            joint.rotation = joint_correction(joint.matrix.to_euler("XZY"))
+
+            #joint.position = joint.matrix.to_translation()
+            #joint.rotation = joint_correction(joint.matrix.to_euler("XZY"))
+            joint.position = joint.matrix.to_translation()
+            joint.rotation = joint.matrix.to_euler("XYZ")
+
             armature.joints_dic[joint.name] = joint
 
         #Create an oredered list and assign the parent indexes        
@@ -182,7 +203,7 @@ def write_some_data(context, filepath, textual):
             
             world_matrix = obj.matrix_world
             mesh = obj.to_mesh(scene, True, 'RENDER')
-            mesh.transform(world_matrix)
+            mesh.transform(correction_matrix*world_matrix)
             mesh_triangulate(mesh)
             mesh.calc_normals_split()
             h3d_mesh.mesh = mesh
