@@ -76,6 +76,7 @@ class H3dJoint:
         self.position = [0,0,0]
         self.index = 0
         self.keyframes = [] #These must be sorted according to frame number
+        self.blender_bone = None
 
 class H3dArmature:
     def __init__(self):
@@ -96,19 +97,10 @@ def fill_keyframes(scene, h3d_armature):
             h3d_joint = find_joint_by_name(h3d_armature, pbone.name)
             keyframe = H3dKeyframe()
             keyframe.frame = f
-            #matrix = base_bone_correction * blender_armature.convert_space(pose_bone=pbone, matrix=pbone.matrix, from_space='POSE', to_space='WORLD') #matrix is absolute?
-            #matrix = blender_armature.convert_space(pose_bone=pbone, matrix=pbone.matrix, from_space='POSE', to_space='LOCAL_WITH_PARENT')
             matrix = blender_armature.convert_space(pose_bone=pbone, matrix=pbone.matrix, from_space='POSE', to_space='LOCAL')
-            #if pbone.parent:
-            #    parent_matrix = blender_armature.convert_space(pose_bone=pbone.parent, matrix=pbone.parent.matrix, from_space='POSE', to_space='LOCAL')
-            #    matrix = matrix_difference(matrix, parent_matrix)
-            #matrix = blender_armature.convert_space(pose_bone=pbone, matrix=pbone.matrix, to_space='LOCAL')
-            #matrix =  matrix_difference(pbone.matrix, blender_armature.matrix_basis)
-            
-            #keyframe.position = matrix.to_translation()
-            #keyframe.rotation = joint_correction(matrix.to_euler("XZY"))
             keyframe.position = matrix.to_translation()
-            keyframe.rotation = matrix.to_euler("XYZ") #ZYX ZXY XYZ XZY YXZ YZX
+            keyframe.rotation = matrix.to_euler("XYZ")
+            #keyframe.rotation = (keyframe.rotation[0], keyframe.rotation[1], -keyframe.rotation[2])
  
             h3d_joint.keyframes.append(keyframe)
 
@@ -149,6 +141,7 @@ def prepare_armatures(armatures_list):
             joint = H3dJoint()
             joint.name = bone.name
             parent_bone = bone.parent
+            joint.blender_bone = bone
             if parent_bone is not None:
                 joint.parentName = parent_bone.name
             else:
@@ -202,7 +195,17 @@ def write_some_data(context, filepath, textual):
             h3d_mesh.vertex_groups = obj.vertex_groups
             
             world_matrix = obj.matrix_world
+            
+            for modifier in obj.modifiers:
+                if modifier.type == 'ARMATURE':
+                    modifier.show_render = False
+            
             mesh = obj.to_mesh(scene, True, 'RENDER')
+            
+            for modifier in obj.modifiers:
+                if modifier.type == 'ARMATURE':
+                    modifier.show_render = True
+                    
             mesh.transform(correction_matrix*world_matrix)
             mesh_triangulate(mesh)
             mesh.calc_normals_split()
