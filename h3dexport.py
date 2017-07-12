@@ -2,6 +2,8 @@ import bpy
 import struct
 from mathutils import Matrix
 from math import pi
+from collections import namedtuple
+
 
 ###############################################
 #Extend Object with a is_keyframe method
@@ -14,6 +16,83 @@ def is_keyframe(ob, frame, data_path, array_index=-1):
     return False
 
 bpy.types.Object.is_keyframe = is_keyframe
+###############################################
+
+
+#K-D Tree######################################
+class KDNode(namedtuple('KDNode', 'vertex left_child right_child')):
+    pass
+
+#Pass a copy of the vertices list since it is going to be sorted a lot of times
+def kdtree(vertices, depth=0):
+    k = 3 #3D
+    axis = depth % k
+    
+    if len(vertices) == 0:
+        return None
+    
+    #TODO instead of sorting pick 10% random values and calculate their median
+    vertices.sort(key=lambda v:v.position[axis], reverse=False)
+    median = len(vertices) // 2
+    
+    return KDNode(vertex=vertices[median],
+            left_child=kdtree(vertices[:median], depth+1),
+            right_child=kdtree(vertices[median + 1:], depth+1) )
+            
+def is_near(f1, f2):
+    return ( abs(f1-f2) < 0.01)
+
+def is_similar(v1, v2):
+    return (is_near(v1.position[0], v2.position[0]) and
+            is_near(v1.position[1], v2.position[1]) and
+            is_near(v1.position[2], v2.position[2]) and
+            is_near(v1.normal[0], v2.normal[0]) and
+            is_near(v1.normal[1], v2.normal[1]) and
+            is_near(v1.normal[2], v2.normal[2]) and
+            is_near(v1.uv[0], v2.uv[0]) and
+            is_near(v1.uv[1], v2.uv[1]) )
+
+def squared_distance(v1, v2):
+    return  ( (v1.position[0]-v2.position[0])**2 ) + ( (v1.position[1]-v2.position[1])**2 ) + ( (v1.position[2]-v2.position[2])**2 )
+
+def mark_if_similar(vertex, other_vertex):
+    if is_similar(vertex, other_vertex):
+        other_vertex.similar_index = vertex.similar_index
+
+def identify_similars(vertex, node, depth=0, best=None):
+    axis = depth % 3
+         
+    if node is None:
+        return best
+    if best is None:
+        best = node
+ 
+    # consider the current node
+    if squared_distance(node.vertex, vertex) < squared_distance(best.vertex, vertex):
+        best = node
+ 
+    diff = vertex.position[axis] - node.vertex.position[axis]
+    close, away = (node.left_child, node.right_child) if diff <= 0 else (node.right_child, node.left_child)
+ 
+    # search the near branch
+    best = identify_similars(vertex, close, depth+1, best)
+    if best.vertex.similar_index < 0:
+        mark_if_similar(vertex, best.vertex)
+    
+    # search the away branch - maybe
+    if diff**2 < squared_distance(best.vertex, vertex):
+        best = identify_similars(vertex, away, depth+1, best)
+        if best.vertex.similar_index < 0:
+            mark_if_similar(vertex, best.vertex)
+  
+    return best
+
+def get_unique_vertices(vertices, triangles, kdtree_root):
+    for vertex in vertices:
+        if vertex.similar_index < 0:
+            vertex.similar_index = vertex.index #Mark this vertex as unique
+            identify_similars(vertex, kdtree_root)
+
 ###############################################
 
 
@@ -34,24 +113,6 @@ def mesh_triangulate(me):
     bm.to_mesh(me)
     bm.free()
     
-def matrix_difference(mat_src, mat_dst):
-    mat_dst_inv = mat_dst.inverted()
-    return mat_dst_inv * mat_src
-
-#def joint_correction(value):
-#    return (value[2], value[1], -value[0])
-
-
-#def joint_correction(value):
-#    return (value[1], value[0], value[1])
-
-#def joint_correction(value):
-#    return (-value[0], value[2], value[1])
-
-def joint_correction(value):
-    return (-value[0], value[2], value[1])
-
-
 class H3dMesh:
     def __init__(self):
         self.mesh = None
@@ -78,12 +139,28 @@ class H3dJoint:
         self.keyframes = [] #These must be sorted according to frame number
         self.blender_bone = None
 
+
 class H3dArmature:
     def __init__(self):
         self.name = ""
         self.blender_armature = None
         self.joints_dic = {}
         self.joints = []
+
+
+class H3dVertex:
+    def __init__(self, position, normal, uv, bones, index):
+        self.position = position
+        self.normal = normal
+        self.uv = uv
+        self.bones = bones
+        self.index = index
+        self.similar_index = -1
+        
+        
+class H3dTriangle:
+    def __init__(self, v1, v2, v3):
+        self.indices = [v1, v2, v3]
 
 def fill_keyframes(scene, h3d_armature):
     base_bone_correction = Matrix.Rotation(pi / 2, 4, 'Z')
@@ -100,8 +177,7 @@ def fill_keyframes(scene, h3d_armature):
             matrix = blender_armature.convert_space(pose_bone=pbone, matrix=pbone.matrix, from_space='POSE', to_space='LOCAL')
             keyframe.position = matrix.to_translation()
             keyframe.rotation = matrix.to_euler("XYZ")
-            #keyframe.rotation = (keyframe.rotation[0], keyframe.rotation[1], -keyframe.rotation[2])
- 
+
             h3d_joint.keyframes.append(keyframe)
 
 def write_armature(f, textual, armature):
@@ -148,9 +224,6 @@ def prepare_armatures(armatures_list):
                 joint.parentName = ""
             joint.matrix = correction_matrix * base_matrix * bone.matrix_local
 
-
-            #joint.position = joint.matrix.to_translation()
-            #joint.rotation = joint_correction(joint.matrix.to_euler("XZY"))
             joint.position = joint.matrix.to_translation()
             joint.rotation = joint.matrix.to_euler("XYZ")
 
@@ -172,6 +245,76 @@ def find_joint_index(armature, vertex_group):
     
 def find_joint_by_name(armature, name):
     return armature.joints[armature.joints_dic[name].index]
+
+def write_vertices(f, textual, vertices):
+    if textual:
+        f.write("%d\n" % len(vertices))
+    else:
+        f.write(struct.pack("<1i", len(vertices)))
+    
+    for vertex in vertices:
+        if textual:
+            line = "v {v.x} {v.y} {v.z}\n"
+            line = line.format(v=vertex.position)
+            f.write(line)
+            line = "n {n.x} {n.y} {n.z}\n"
+            line = line.format(n=vertex.normal)
+            f.write(line)
+            line = "t {t[0]} {t[1]}\n"
+            line = line.format(t=vertex.uv)
+            f.write(line)
+            line = "b {j} {w}\n"
+            line = line.format(j=vertex.bones[0], w=vertex.bones[1])
+            f.write(line)
+        else:
+            f.write(struct.pack("<3f", *vertex.position))
+            f.write(struct.pack("<3f", *vertex.normal))
+            f.write(struct.pack("<2f", *vertex.uv))
+            f.write(struct.pack("<1i1f", *vertex.bones))
+
+
+def create_vertices_list(group):
+    loops = group.mesh.loops
+    vertices = group.mesh.vertices
+    h3d_vertices = []
+    for i, loop in enumerate(loops):
+        vertex_groups_info = sorted(vertices[loop.vertex_index].groups, key=lambda vg:vg.weight, reverse=True) #TODO Dont forget to normalize the weights (sum must be 1)
+        #Convert the vertex_group index into an index for our joint arrays
+        bones_index_weight = []
+        for vg_info in vertex_groups_info:
+                index = find_joint_index(group.h3d_armature, group.vertex_groups[vg_info.group])
+                if -1 == index:
+                    continue    #This vertex_group is not part of the armature
+                weight = vg_info.weight
+                bones_index_weight.append((index, weight))
+                    
+        #Fill the remainder bone slots with -1
+        if len(vertex_groups_info) < 3:
+            for c in range(len(vertex_groups_info), 3):
+                bones_index_weight.append((-1, 0.0))
+        
+        uv = (group.mesh.uv_layers.active.data[i].uv[0], 1-group.mesh.uv_layers.active.data[i].uv[1])
+        bones = (bones_index_weight[0][0], bones_index_weight[0][1])
+
+        h3d_vertex = H3dVertex(vertices[loop.vertex_index].co, loop.normal, uv, bones, i)
+        h3d_vertices.append(h3d_vertex)
+        
+    return h3d_vertices
+
+def write_triangles(f, textual, h3d_triangles):
+    if textual:
+        f.write("%d\n" % len(h3d_triangles))
+    else:
+        f.write(struct.pack("<1i", len(h3d_triangles)))
+                
+    for triangle in h3d_triangles:
+        if textual:
+            line = "tri {l[0]} {l[1]} {l[2]}\n"
+            line = line.format(l=triangle.indices)
+            f.write(line)
+        else:
+            f.write(struct.pack("<3i", *triangle.indices))
+
 
 def write_some_data(context, filepath, textual):
         
@@ -196,6 +339,7 @@ def write_some_data(context, filepath, textual):
             
             world_matrix = obj.matrix_world
             
+            #Temporarily disable any armature modifiers to prevent the rest pose from changing the final mesh
             for modifier in obj.modifiers:
                 if modifier.type == 'ARMATURE':
                     modifier.show_render = False
@@ -224,11 +368,11 @@ def write_some_data(context, filepath, textual):
             armature.blender_armature = obj
             armatures.append(armature)
             
+    #Prepare armatures and fill in keyframes
     prepare_armatures(armatures)
-    
     for armature in armatures:
         fill_keyframes(scene, armature)
-        
+    #assign the armatures to the correct groups        
     for group in groups:
         if not group.animated:
             continue
@@ -236,18 +380,19 @@ def write_some_data(context, filepath, textual):
             if group.blender_armature == armature.name:
                 group.h3d_armature = armature
 
-    
+    #Write the number of groups    
     if textual:
         f.write("%d\n" % len(groups))
     else:
         f.write(struct.pack("<1i", len(groups)))
+
     
     for group in groups:
+        #Write the name of the group and its material
         if textual:
             f.write("%s\n" % group.mesh.name)
         else:
             binary_write_string(f, group.mesh.name)
-
         material = group.mesh.materials[0]
         material = bpy.data.materials[material.name]
         if material is None:
@@ -258,67 +403,30 @@ def write_some_data(context, filepath, textual):
                 material_index = len(materials)-1
             else:
                 material_index = materials.index(material)
-                
         if textual:
             f.write("%d\n" % material_index)
         else:
             f.write(struct.pack("<1i", material_index))
             
-        vertices = group.mesh.vertices
-        if textual:
-            f.write("%d\n" % len(group.mesh.polygons))
-        else:
-            f.write(struct.pack("<1i", len(group.mesh.polygons)))
-            
-        for triangle in group.mesh.polygons:
-            if textual:
-                line = "tri {l[0]} {l[1]} {l[2]}\n"
-                line = line.format(l=triangle.loop_indices)
-                f.write(line)
-            else:
-                f.write(struct.pack("<3i", *triangle.loop_indices))
-        
-        loops = group.mesh.loops
-        if textual:
-            f.write("%d\n" % len(loops))
-        else:
-            f.write(struct.pack("<1i", len(loops)))
-    
-        for i, loop in enumerate(loops):
-            vertex_groups_info = sorted(vertices[loop.vertex_index].groups, key=lambda vg:vg.weight, reverse=True) #TODO Dont forget to normalize the weights (sum must be 1)
-            #Convert the vertex_group index into an index for our joint arrays
-            bones_index_weight = []
-            for vg_info in vertex_groups_info:
-                    index = find_joint_index(group.h3d_armature, group.vertex_groups[vg_info.group])
-                    if -1 == index:
-                        continue    #This vertex_group is not part of the armature
-                    weight = vg_info.weight
-                    bones_index_weight.append((index, weight))
-                    
-            #Fill the remainder bone slots with -1
-            if len(vertex_groups_info) < 3:
-                for c in range(len(vertex_groups_info), 3):
-                    bones_index_weight.append((-1, 0.0))
-            
-            if textual:
-                line = "v {v.x} {v.y} {v.z}\n"
-                line = line.format(v=vertices[loop.vertex_index].co)
-                f.write(line)
-                line = "n {n.x} {n.y} {n.z}\n"
-                line = line.format(n=loop.normal)
-                f.write(line)
-                line = "t {u} {v}\n"
-                line = line.format(u=group.mesh.uv_layers.active.data[i].uv[0], v=1-group.mesh.uv_layers.active.data[i].uv[1])
-                f.write(line)
-                line = "b {j} {w}\n"
-                line = line.format(j=bones_index_weight[0][0], w=bones_index_weight[0][1])
-                f.write(line)
 
-            else:
-                f.write(struct.pack("<3f", *vertices[loop.vertex_index].co))
-                f.write(struct.pack("<3f", *loop.normal))
-                f.write(struct.pack("<2f", group.mesh.uv_layers.active.data[i].uv[0], 1-group.mesh.uv_layers.active.data[i].uv[1]))
-                f.write(struct.pack("<1i1f", *bones_index_weight[0]))
+        #Get the triangles
+        h3d_triangles = []
+        for triangle in group.mesh.polygons:
+            h3d_triangle = H3dTriangle(*triangle.loop_indices)
+            h3d_triangles.append(h3d_triangle)
+        #Get the vertexes
+        h3d_vertices = create_vertices_list(group)
+        
+        vertex_tree = kdtree(h3d_vertices[:])        
+        get_unique_vertices(h3d_vertices, h3d_triangles, vertex_tree)
+        
+        
+        #Write the triangles
+        write_triangles(f, textual, h3d_triangles)
+        #Write the vertices
+        write_vertices(f, textual, h3d_vertices)
+
+
 
         #declare the armature                    
         if not group.animated:
