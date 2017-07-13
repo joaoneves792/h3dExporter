@@ -2,7 +2,7 @@ import bpy
 import struct
 from mathutils import Matrix
 from math import pi
-from collections import namedtuple
+from collections import namedtuple, OrderedDict
 
 
 ###############################################
@@ -31,7 +31,6 @@ def kdtree(vertices, depth=0):
     if len(vertices) == 0:
         return None
     
-    #TODO instead of sorting pick 10% random values and calculate their median
     vertices.sort(key=lambda v:v.position[axis], reverse=False)
     median = len(vertices) // 2
     
@@ -55,11 +54,8 @@ def is_similar(v1, v2):
 def squared_distance(v1, v2):
     return  ( (v1.position[0]-v2.position[0])**2 ) + ( (v1.position[1]-v2.position[1])**2 ) + ( (v1.position[2]-v2.position[2])**2 )
 
-def mark_if_similar(vertex, other_vertex):
-    if is_similar(vertex, other_vertex):
-        other_vertex.similar_index = vertex.similar_index
-
-def identify_similars(vertex, node, depth=0, best=None):
+#Nearest Neighbor search
+def identify_similars(vertex, node, new_index, depth=0, best=None):
     axis = depth % 3
          
     if node is None:
@@ -67,6 +63,10 @@ def identify_similars(vertex, node, depth=0, best=None):
     if best is None:
         best = node
  
+    if node.vertex.similar_index < 0:
+        if is_similar(vertex, node.vertex):
+            node.vertex.similar_index = new_index
+    
     # consider the current node
     if squared_distance(node.vertex, vertex) < squared_distance(best.vertex, vertex):
         best = node
@@ -75,26 +75,43 @@ def identify_similars(vertex, node, depth=0, best=None):
     close, away = (node.left_child, node.right_child) if diff <= 0 else (node.right_child, node.left_child)
  
     # search the near branch
-    best = identify_similars(vertex, close, depth+1, best)
-    if best.vertex.similar_index < 0:
-        mark_if_similar(vertex, best.vertex)
+    best = identify_similars(vertex, close, new_index, depth+1, best)
+
     
     # search the away branch - maybe
-    if diff**2 < squared_distance(best.vertex, vertex):
-        best = identify_similars(vertex, away, depth+1, best)
-        if best.vertex.similar_index < 0:
-            mark_if_similar(vertex, best.vertex)
+    if diff**2 <= (squared_distance(best.vertex, vertex)*2): #Has to be *2 to broaden into possible 2 equal vertices
+        best = identify_similars(vertex, away, new_index, depth+1, best)
+
   
     return best
 
 def get_unique_vertices(vertices, triangles, kdtree_root):
+    new_index = 0
     for vertex in vertices:
         if vertex.similar_index < 0:
-            vertex.similar_index = vertex.index #Mark this vertex as unique
-            identify_similars(vertex, kdtree_root)
+            vertex.similar_index = new_index #Mark this vertex as unique
+            identify_similars(vertex, kdtree_root, new_index)
+            new_index += 1
+            
+    #Update the triangle indexes
+    for triangle in triangles:
+        for i, vi in enumerate(triangle.indices):
+            triangle.indices[i] = vertices[vi].similar_index
+            
+            
+    new_vertices = []
+    vertices.sort(key=lambda v:v.similar_index)
+    last_seen = -1
+    for vertex in vertices:
+        if vertex.similar_index > last_seen:
+            vertex.index = vertex.similar_index
+            new_vertices.append(vertex)
+            last_seen = vertex.similar_index
+            
+    return new_vertices
 
 ###############################################
-
+ 
 
 correction_matrix = Matrix.Rotation(-pi/2, 4, 'X')
 
@@ -266,6 +283,7 @@ def write_vertices(f, textual, vertices):
             line = "b {j} {w}\n"
             line = line.format(j=vertex.bones[0], w=vertex.bones[1])
             f.write(line)
+            f.write("%d\n" % vertex.similar_index)
         else:
             f.write(struct.pack("<3f", *vertex.position))
             f.write(struct.pack("<3f", *vertex.normal))
@@ -418,7 +436,7 @@ def write_some_data(context, filepath, textual):
         h3d_vertices = create_vertices_list(group)
         
         vertex_tree = kdtree(h3d_vertices[:])        
-        get_unique_vertices(h3d_vertices, h3d_triangles, vertex_tree)
+        h3d_vertices = get_unique_vertices(h3d_vertices, h3d_triangles, vertex_tree)
         
         
         #Write the triangles
