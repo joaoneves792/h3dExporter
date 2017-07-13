@@ -18,118 +18,6 @@ def is_keyframe(ob, frame, data_path, array_index=-1):
 bpy.types.Object.is_keyframe = is_keyframe
 ###############################################
 
-
-#K-D Tree######################################
-class KDNode(namedtuple('KDNode', 'vertex left_child right_child')):
-    pass
-
-#Pass a copy of the vertices list since it is going to be sorted a lot of times
-def kdtree(vertices, depth=0):
-    k = 3 #3D
-    axis = depth % k
-    
-    if len(vertices) == 0:
-        return None
-    
-    vertices.sort(key=lambda v:v.position[axis], reverse=False)
-    median = len(vertices) // 2
-    
-    return KDNode(vertex=vertices[median],
-            left_child=kdtree(vertices[:median], depth+1),
-            right_child=kdtree(vertices[median + 1:], depth+1) )
-            
-def is_near(f1, f2):
-    return ( abs(f1-f2) < 0.01)
-
-def is_similar(v1, v2):
-    return (is_near(v1.position[0], v2.position[0]) and
-            is_near(v1.position[1], v2.position[1]) and
-            is_near(v1.position[2], v2.position[2]) and
-            is_near(v1.normal[0], v2.normal[0]) and
-            is_near(v1.normal[1], v2.normal[1]) and
-            is_near(v1.normal[2], v2.normal[2]) and
-            is_near(v1.uv[0], v2.uv[0]) and
-            is_near(v1.uv[1], v2.uv[1]) )
-
-def squared_distance(v1, v2):
-    return  ( (v1.position[0]-v2.position[0])**2 ) + ( (v1.position[1]-v2.position[1])**2 ) + ( (v1.position[2]-v2.position[2])**2 )
-
-#Nearest Neighbor search
-def identify_similars(vertex, node, new_index, depth=0, best=None):
-    axis = depth % 3
-         
-    if node is None:
-        return best
-    if best is None:
-        best = node
- 
-    if node.vertex.similar_index < 0:
-        if is_similar(vertex, node.vertex):
-            node.vertex.similar_index = new_index
-    
-    # consider the current node
-    if squared_distance(node.vertex, vertex) < squared_distance(best.vertex, vertex):
-        best = node
- 
-    diff = vertex.position[axis] - node.vertex.position[axis]
-    close, away = (node.left_child, node.right_child) if diff <= 0 else (node.right_child, node.left_child)
- 
-    # search the near branch
-    best = identify_similars(vertex, close, new_index, depth+1, best)
-
-    
-    # search the away branch - maybe
-    if diff**2 <= (squared_distance(best.vertex, vertex)*2): #Has to be *2 to broaden into possible 2 equal vertices
-        best = identify_similars(vertex, away, new_index, depth+1, best)
-
-  
-    return best
-
-def get_unique_vertices(vertices, triangles, kdtree_root):
-    new_index = 0
-    for vertex in vertices:
-        if vertex.similar_index < 0:
-            vertex.similar_index = new_index #Mark this vertex as unique
-            identify_similars(vertex, kdtree_root, new_index)
-            new_index += 1
-            
-    #Update the triangle indexes
-    for triangle in triangles:
-        for i, vi in enumerate(triangle.indices):
-            triangle.indices[i] = vertices[vi].similar_index
-            
-            
-    new_vertices = []
-    vertices.sort(key=lambda v:v.similar_index)
-    last_seen = -1
-    for vertex in vertices:
-        if vertex.similar_index > last_seen:
-            vertex.index = vertex.similar_index
-            new_vertices.append(vertex)
-            last_seen = vertex.similar_index
-            
-    return new_vertices
-
-###############################################
- 
-
-correction_matrix = Matrix.Rotation(-pi/2, 4, 'X')
-
-def binary_write_string(f, string):
-    count = len(string)
-    f.write(struct.pack("<b", count))
-    sb = bytes(string, 'ascii')
-    final_sb = sb[:count] 
-    f.write(final_sb)
-
-def mesh_triangulate(me):
-    import bmesh
-    bm = bmesh.new()
-    bm.from_mesh(me)
-    bmesh.ops.triangulate(bm, faces=bm.faces)
-    bm.to_mesh(me)
-    bm.free()
-    
 class H3dMesh:
     def __init__(self):
         self.mesh = None
@@ -177,7 +65,47 @@ class H3dVertex:
         
 class H3dTriangle:
     def __init__(self, v1, v2, v3):
-        self.indices = [v1, v2, v3]
+        self.indices = [v1, v2, v3] 
+
+correction_matrix = Matrix.Rotation(-pi/2, 4, 'X')
+
+def binary_write_string(f, string):
+    count = len(string)
+    f.write(struct.pack("<b", count))
+    sb = bytes(string, 'ascii')
+    final_sb = sb[:count] 
+    f.write(final_sb)
+
+def mesh_triangulate(me):
+    import bmesh
+    bm = bmesh.new()
+    bm.from_mesh(me)
+    bmesh.ops.triangulate(bm, faces=bm.faces)
+    bm.to_mesh(me)
+    bm.free()
+    
+
+def get_unique_vertices(vertices, triangles):
+    dict = OrderedDict()
+    new_index = 0
+    for vertex in vertices:
+        key = "{p[0]:.3f}{p[1]:.3f}{p[2]:.3f}{n[0]:.3f}{n[0]:.3f}{n[0]:.3f}{t[0]:.3f}{t[1]:.3f}"
+        key = key.format(p=vertex.position, n=vertex.normal, t=vertex.uv)
+        if key not in dict:
+            vertex.index = new_index
+            new_index += 1
+            dict[key] = vertex
+        else:
+            vertex.index = dict[key].index
+    
+    new_vertices = dict.values()
+    
+    #Update the triangle indexes
+    for triangle in triangles:
+        for i, vi in enumerate(triangle.indices):
+            triangle.indices[i] = vertices[vi].index
+            
+    return new_vertices
 
 def fill_keyframes(scene, h3d_armature):
     base_bone_correction = Matrix.Rotation(pi / 2, 4, 'Z')
@@ -283,7 +211,7 @@ def write_vertices(f, textual, vertices):
             line = "b {j} {w}\n"
             line = line.format(j=vertex.bones[0], w=vertex.bones[1])
             f.write(line)
-            f.write("%d\n" % vertex.similar_index)
+            f.write("%d\n" % vertex.index)
         else:
             f.write(struct.pack("<3f", *vertex.position))
             f.write(struct.pack("<3f", *vertex.normal))
@@ -434,16 +362,12 @@ def write_some_data(context, filepath, textual):
             h3d_triangles.append(h3d_triangle)
         #Get the vertexes
         h3d_vertices = create_vertices_list(group)
-        
-        vertex_tree = kdtree(h3d_vertices[:])        
-        h3d_vertices = get_unique_vertices(h3d_vertices, h3d_triangles, vertex_tree)
-        
+        h3d_vertices = get_unique_vertices(h3d_vertices, h3d_triangles)
         
         #Write the triangles
         write_triangles(f, textual, h3d_triangles)
         #Write the vertices
         write_vertices(f, textual, h3d_vertices)
-
 
 
         #declare the armature                    
