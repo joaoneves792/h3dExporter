@@ -208,15 +208,16 @@ def write_vertices(f, textual, vertices):
             line = "t {t[0]} {t[1]}\n"
             line = line.format(t=vertex.uv)
             f.write(line)
-            line = "b {j} {w}\n"
-            line = line.format(j=vertex.bones[0], w=vertex.bones[1])
-            f.write(line)
-            f.write("%d\n" % vertex.index)
+            for bone in vertex.bones:
+                line = "b {j} {w}\n"
+                line = line.format(j=bone[0], w=bone[1])
+                f.write(line)
         else:
             f.write(struct.pack("<3f", *vertex.position))
             f.write(struct.pack("<3f", *vertex.normal))
             f.write(struct.pack("<2f", *vertex.uv))
-            f.write(struct.pack("<1i1f", *vertex.bones))
+            for bone in vertex.bones:
+                f.write(struct.pack("<1i1f", *bone))
 
 
 def create_vertices_list(group):
@@ -232,16 +233,24 @@ def create_vertices_list(group):
                 if -1 == index:
                     continue    #This vertex_group is not part of the armature
                 weight = vg_info.weight
-                bones_index_weight.append((index, weight))
-                    
+                bones_index_weight.append([index, weight])
+
         #Fill the remainder bone slots with -1
-        if len(vertex_groups_info) < 3:
-            for c in range(len(vertex_groups_info), 3):
-                bones_index_weight.append((-1, 0.0))
+        if len(bones_index_weight) < 3:
+            for c in range(len(bones_index_weight), 3):
+                bones_index_weight.append([-1, 0.0])
+        bones = bones_index_weight[:3]
+
+        #Normalize weights
+        weight_sum = 0.0
+        for bone in bones:
+            weight_sum += bone[1]
+        if weight_sum > 0:
+            for bone in bones:
+                bone[1] = bone[1]/weight_sum    
         
         uv = (group.mesh.uv_layers.active.data[i].uv[0], 1-group.mesh.uv_layers.active.data[i].uv[1])
-        bones = (bones_index_weight[0][0], bones_index_weight[0][1])
-
+        
         h3d_vertex = H3dVertex(vertices[loop.vertex_index].co, loop.normal, uv, bones, i)
         h3d_vertices.append(h3d_vertex)
         
