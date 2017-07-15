@@ -20,11 +20,16 @@ bpy.types.Object.is_keyframe = is_keyframe
 
 class H3dMesh:
     def __init__(self):
+        self.name = ""
         self.mesh = None
+        self.obj = None
         self.vertex_groups = []
         self.animated = False
         self.blender_armature = None
         self.h3d_armature = None
+        self.h3d_shape_keys = []
+        self.shape_keys_original_values = {}
+        self.shape_keys = []
 
 class H3dKeyframe:
     def __init__(self):
@@ -98,7 +103,7 @@ def get_unique_vertices(vertices, triangles):
         else:
             vertex.index = dict[key].index
     
-    new_vertices = dict.values()
+    new_vertices = list(dict.values())
     
     #Update the triangle indexes
     for triangle in triangles:
@@ -191,7 +196,7 @@ def find_joint_index(armature, vertex_group):
 def find_joint_by_name(armature, name):
     return armature.joints[armature.joints_dic[name].index]
 
-def write_vertices(f, textual, vertices):
+def write_vertices(f, textual, vertices, export_uv=True, export_bones=True):
     if textual:
         f.write("%d\n" % len(vertices))
     else:
@@ -205,12 +210,14 @@ def write_vertices(f, textual, vertices):
             line = "n {n.x} {n.y} {n.z}\n"
             line = line.format(n=vertex.normal)
             f.write(line)
-            line = "t {t[0]} {t[1]}\n"
-            line = line.format(t=vertex.uv)
-            f.write(line)
-            for bone in vertex.bones:
-                line = "b {j} {w}\n"
-                line = line.format(j=bone[0], w=bone[1])
+            if export_uv:
+                line = "t {t[0]} {t[1]}\n"
+                line = line.format(t=vertex.uv)
+                f.write(line)
+            if export_bones:
+                for bone in vertex.bones:
+                    line = "b {j} {w}\n"
+                    line = line.format(j=bone[0], w=bone[1])
                 f.write(line)
         else:
             f.write(struct.pack("<3f", *vertex.position))
@@ -220,7 +227,7 @@ def write_vertices(f, textual, vertices):
                 f.write(struct.pack("<1i1f", *bone))
 
 
-def create_vertices_list(group):
+def create_vertices_list(group, num_bones=3, export_armatures=True):
     loops = group.mesh.loops
     vertices = group.mesh.vertices
     h3d_vertices = []
@@ -228,7 +235,8 @@ def create_vertices_list(group):
         vertex_groups_info = sorted(vertices[loop.vertex_index].groups, key=lambda vg:vg.weight, reverse=True) #TODO Dont forget to normalize the weights (sum must be 1)
         #Convert the vertex_group index into an index for our joint arrays
         bones_index_weight = []
-        for vg_info in vertex_groups_info:
+        if export_armatures:
+            for vg_info in vertex_groups_info:
                 index = find_joint_index(group.h3d_armature, group.vertex_groups[vg_info.group])
                 if -1 == index:
                     continue    #This vertex_group is not part of the armature
@@ -236,10 +244,10 @@ def create_vertices_list(group):
                 bones_index_weight.append([index, weight])
 
         #Fill the remainder bone slots with -1
-        if len(bones_index_weight) < 3:
-            for c in range(len(bones_index_weight), 3):
+        if len(bones_index_weight) < num_bones:
+            for c in range(len(bones_index_weight), num_bones):
                 bones_index_weight.append([-1, 0.0])
-        bones = bones_index_weight[:3]
+        bones = bones_index_weight[:num_bones]
 
         #Normalize weights
         weight_sum = 0.0
@@ -256,6 +264,21 @@ def create_vertices_list(group):
         
     return h3d_vertices
 
+
+def generate_h3d_tri_verts(group, num_bones, export_armatures, no_duplicates):
+    #Get the triangles
+    h3d_triangles = []
+    for triangle in group.mesh.polygons:
+        h3d_triangle = H3dTriangle(*triangle.loop_indices)
+        h3d_triangles.append(h3d_triangle)
+    #Get the vertexes
+    h3d_vertices = create_vertices_list(group, num_bones, export_armatures)
+
+    if no_duplicates:
+        h3d_vertices = get_unique_vertices(h3d_vertices, h3d_triangles)
+    return h3d_triangles, h3d_vertices
+    
+
 def write_triangles(f, textual, h3d_triangles):
     if textual:
         f.write("%d\n" % len(h3d_triangles))
@@ -270,8 +293,50 @@ def write_triangles(f, textual, h3d_triangles):
         else:
             f.write(struct.pack("<3i", *triangle.indices))
 
+def group_to_h3d_mesh(scene, obj, export_armatures):
+    h3d_mesh = H3dMesh()
+    h3d_mesh.name = obj.name
+    h3d_mesh.obj = obj
+            
+    h3d_mesh.vertex_groups = obj.vertex_groups
+            
+    world_matrix = obj.matrix_world
+            
+    #Temporarily disable any armature modifiers to prevent the rest pose from changing the final mesh
+    for modifier in obj.modifiers:
+        if modifier.type == 'ARMATURE':
+            modifier.show_render = False
+            
+    mesh = obj.to_mesh(scene, True, 'RENDER')
+    
+    for modifier in obj.modifiers:
+        if modifier.type == 'ARMATURE':
+            modifier.show_render = True
+                    
+    mesh.transform(correction_matrix*world_matrix)
+    mesh_triangulate(mesh)
+    mesh.calc_normals_split()
+    h3d_mesh.mesh = mesh
+            
+    if export_armatures:
+        armature = obj.find_armature()
+        if armature is not None:
+            h3d_mesh.animated = True
+            h3d_mesh.blender_armature = armature.name
 
-def write_some_data(context, filepath, textual):
+    return h3d_mesh
+
+
+def export_h3d(operator, context, filepath, textual, no_duplicates, num_bones, export_armatures, export_keyframes, shape_keys_behaviour):
+    if shape_keys_behaviour == '1':
+        apply_shape_keys = False
+        export_shape_keys = True
+    elif shape_keys_behaviour == '2':
+        apply_shape_keys = True
+        export_shape_keys = False
+    elif shape_keys_behaviour == '3':
+        apply_shape_keys = False
+        export_shape_keys = False
         
     print("running write_some_data...")
     if textual:
@@ -288,45 +353,45 @@ def write_some_data(context, filepath, textual):
         
     for obj in scene.objects:
         if obj.type == 'MESH':
-            h3d_mesh = H3dMesh()
-            
-            h3d_mesh.vertex_groups = obj.vertex_groups
-            
-            world_matrix = obj.matrix_world
-            
-            #Temporarily disable any armature modifiers to prevent the rest pose from changing the final mesh
-            for modifier in obj.modifiers:
-                if modifier.type == 'ARMATURE':
-                    modifier.show_render = False
-            
-            mesh = obj.to_mesh(scene, True, 'RENDER')
-            
-            for modifier in obj.modifiers:
-                if modifier.type == 'ARMATURE':
-                    modifier.show_render = True
-                    
-            mesh.transform(correction_matrix*world_matrix)
-            mesh_triangulate(mesh)
-            mesh.calc_normals_split()
-            h3d_mesh.mesh = mesh
-            
-            armature = obj.find_armature()
-            if armature is not None:
-                h3d_mesh.animated = True
-                h3d_mesh.blender_armature = armature.name
-                                
+            shape_keys = []
+            shape_key_values = {}            
+            if obj.data.shape_keys is not None:
+                #Set them to 0 if not applying them
+                for shape_key in obj.data.shape_keys.key_blocks:
+                    shape_key_values[shape_key.name] = shape_key.value
+                    if not apply_shape_keys:
+                        shape_key.value = 0.0
+                #Set each one to 1.0 and export it as an h3d mesh
+                if export_shape_keys:
+                    for shape_key in obj.data.shape_keys.key_blocks:
+                        shape_key.value = 1.0
+                        h3d_mesh_sk = group_to_h3d_mesh(scene, obj, export_armatures)
+                        shape_key.value = 0.0
+                        h3d_mesh_sk.name = shape_key.name
+                        shape_keys.append(h3d_mesh_sk)
+                
+            h3d_mesh = group_to_h3d_mesh(scene, obj, export_armatures)
+            h3d_mesh.h3d_shape_keys = shape_keys
             groups.append(h3d_mesh)
             
-        if obj.type == 'ARMATURE':
+            #Restore shape key values
+            if obj.data.shape_keys is not None:
+                for shape_key in obj.data.shape_keys.key_blocks:
+                    shape_key.value = shape_key_values[shape_key.name]
+
+        if obj.type == 'ARMATURE' and export_armatures:
             armature = H3dArmature()
             armature.name = obj.name
             armature.blender_armature = obj
             armatures.append(armature)
             
     #Prepare armatures and fill in keyframes
-    prepare_armatures(armatures)
-    for armature in armatures:
-        fill_keyframes(scene, armature)
+    if export_armatures:
+        prepare_armatures(armatures)
+        if export_keyframes:
+            for armature in armatures:
+                fill_keyframes(scene, armature)
+                
     #assign the armatures to the correct groups        
     for group in groups:
         if not group.animated:
@@ -345,7 +410,7 @@ def write_some_data(context, filepath, textual):
     for group in groups:
         #Write the name of the group and its material
         if textual:
-            f.write("%s\n" % group.mesh.name)
+            f.write("%s\n" % group.name)
         else:
             binary_write_string(f, group.mesh.name)
         material = group.mesh.materials[0]
@@ -363,21 +428,17 @@ def write_some_data(context, filepath, textual):
         else:
             f.write(struct.pack("<1i", material_index))
             
-
-        #Get the triangles
-        h3d_triangles = []
-        for triangle in group.mesh.polygons:
-            h3d_triangle = H3dTriangle(*triangle.loop_indices)
-            h3d_triangles.append(h3d_triangle)
-        #Get the vertexes
-        h3d_vertices = create_vertices_list(group)
-        h3d_vertices = get_unique_vertices(h3d_vertices, h3d_triangles)
+        #Now we get the triangles and vertices
+        if len(group.h3d_shape_keys) > 0:
+            #if this group has shape keys then we cant remove duplicates, otherwise we would break the triangle indices!
+            h3d_triangles, h3d_vertices = generate_h3d_tri_verts(group, num_bones, export_armatures, False)        
+        else:
+            h3d_triangles, h3d_vertices = generate_h3d_tri_verts(group, num_bones, export_armatures, no_duplicates)
         
         #Write the triangles
         write_triangles(f, textual, h3d_triangles)
         #Write the vertices
         write_vertices(f, textual, h3d_vertices)
-
 
         #declare the armature                    
         if not group.animated:
@@ -392,7 +453,21 @@ def write_some_data(context, filepath, textual):
             else:
                 f.write(struct.pack("<1b", 1))
                 binary_write_string(f, group.h3d_armature.name)
-
+        
+        #Shape Keys
+        if textual:
+            f.write("Shape keys: %d\n" % len(group.h3d_shape_keys))
+                
+        for shape_key in group.h3d_shape_keys:
+            sk_h3d_triangles, sk_h3d_vertices = generate_h3d_tri_verts(shape_key, num_bones=0, export_armatures=False, no_duplicates=False)
+            
+            if textual:
+                f.write("%s\n" % shape_key.name)
+                #Write the triangles
+                write_triangles(f, textual, sk_h3d_triangles)
+                #Write the vertices
+                write_vertices(f, textual, sk_h3d_vertices, False, False)    
+            
         
     #Handle the materials
     if textual:
@@ -459,15 +534,19 @@ def write_some_data(context, filepath, textual):
         f.write("Armatures: %d\n" % len(armatures))
     else:
         f.write(struct.pack("<1i", len(armatures)))
-    for armature in armatures:
-        write_armature(f, textual, armature)
+    if export_armatures:
+        for armature in armatures:
+            write_armature(f, textual, armature)
     
     f.close()
     
     #Clean up
     for group in groups:
         bpy.data.meshes.remove(group.mesh)
+        for shape_key in group.h3d_shape_keys:
+            bpy.data.meshes.remove(shape_key.mesh)
     
+    operator.report({'INFO'}, "Export Successful")
     return {'FINISHED'}
 
 
@@ -487,7 +566,7 @@ class Hobby3dExporter(Operator, ExportHelper):
     filename_ext = ".h3d"
 
     filter_glob = StringProperty(
-            default="*.txt",
+            default="*.h3d",
             options={'HIDDEN'},
             maxlen=255,  # Max internal buffer length, longer would be clamped.
             )
@@ -499,22 +578,51 @@ class Hobby3dExporter(Operator, ExportHelper):
             description="Output text (for debugging)",
             default=False,
             )
+            
+    no_duplicates = BoolProperty(
+            name="Remove duplicated vertices",
+            description="Eliminate vertices that share the same position, normal and uv",
+            default=True,
+            )
 
-    type = EnumProperty(
-            name="Example Enum",
-            description="Choose between two items",
-            items=(('OPT_A', "First Option", "Description one"),
-                   ('OPT_B', "Second Option", "Description two")),
-            default='OPT_A',
+    armatures = BoolProperty(
+            name="Export armatures",
+            description="Export the bones of all armatures on the scene",
+            default=True,
+            )
+    keyframes = BoolProperty(
+            name="Export keyframes",
+            description="Only bone location and rotation keyframes are supported",
+            default=True,
+            )
+
+            
+    num_bones = EnumProperty(
+            name="Bones per vertex",
+            description="How many bones can affect a vertex (Don't change this unless you modified libhobby3d)",
+            items=(('1', "1", "The bone with the most weight will be picked"),
+                   ('2', "2", "Pick the two heaviest bones and normalize their weights"),
+                   ('3', "3", "Pick the three heaviest bones and normalize their weights"),
+                   ('4', "4", "Four is the largest ammount of bones we can feed into the shader")),
+            default='3',
+            )
+
+    shape_keys = EnumProperty(
+            name="Shape Keys",
+            description="How to handle Shape Keys",
+            items=(('1', "Export", "Export all Shape Keys, duplicated vertex removal will be disabled on groups that have shape keys"),
+                   ('2', "Apply", "Applies current shape keys transformation to base exported mesh (and doesn't export them)"),
+                   ('3', "Ignore", "Ignore shape keys (sets their value to 0 before exporting)")),
+            default='3',
             )
 
     def execute(self, context):
-        return write_some_data(context, self.filepath, self.textual)
+        return export_h3d(self, context, self.filepath, self.textual, self.no_duplicates, int(self.num_bones), self.armatures, self.keyframes, self.shape_keys)
 
 
 # Only needed if you want to add into a dynamic menu
 def menu_func_export(self, context):
-    self.layout.operator(ExportSomeData.bl_idname, text="libhobby3d (.h3d)")
+    self.layout.operator(Hobby3dExporter.bl_idname, text="libhobby3d (.h3d)")
 
 
 def register():
