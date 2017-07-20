@@ -72,7 +72,7 @@ class H3dVertex:
         self.uv = uv
         self.bones = bones
         self.index = index
-        self.similar_index = -1
+        self.original_index = index
         
         
 class H3dTriangle:
@@ -237,9 +237,11 @@ def write_vertices(f, textual, vertices, export_uv=True, export_bones=True):
         else:
             f.write(struct.pack("<3f", *vertex.position))
             f.write(struct.pack("<3f", *vertex.normal))
-            f.write(struct.pack("<2f", *vertex.uv))
-            for bone in vertex.bones:
-                f.write(struct.pack("<1i1f", *bone))
+            if export_uv:
+                f.write(struct.pack("<2f", *vertex.uv))
+            if export_bones:
+                for bone in vertex.bones:
+                    f.write(struct.pack("<1i1f", *bone))
 
 
 def create_vertices_list(group, num_bones=3, export_armatures=True):
@@ -448,11 +450,7 @@ def export_h3d(operator, file_path, textual, no_duplicates, num_bones, export_ar
             f.write(struct.pack("<1i", material_index))
             
         # Now we get the triangles and vertices
-        if len(group.h3d_shape_keys) > 0:
-            # if this group has shapeKeys then we cant remove duplicates, otherwise we would break the triangle indices!
-            h3d_triangles, h3d_vertices = generate_h3d_tri_verts(group, num_bones, export_armatures, False)        
-        else:
-            h3d_triangles, h3d_vertices = generate_h3d_tri_verts(group, num_bones, export_armatures, no_duplicates)
+        h3d_triangles, h3d_vertices = generate_h3d_tri_verts(group, num_bones, export_armatures, no_duplicates)
         
         # Write the triangles
         write_triangles(f, textual, h3d_triangles)
@@ -476,17 +474,23 @@ def export_h3d(operator, file_path, textual, no_duplicates, num_bones, export_ar
         # Shape Keys
         if textual:
             f.write("Shape keys: %d\n" % len(group.h3d_shape_keys))
-                
+        else:
+            f.write(struct.pack("<1i", len(group.h3d_shape_keys)))
+
         for shape_key in group.h3d_shape_keys:
             sk_h3d_triangles, sk_h3d_vertices = generate_h3d_tri_verts(shape_key, num_bones=0,
                                                                        export_armatures=False, no_duplicates=False)
             
+            #Elininate duplicates based on the duplicate removal from the basis
+            final_sk_h3d_vertices = h3d_vertices[:]
+            for i, base_vert in enumerate(h3d_vertices):
+                final_sk_h3d_vertices[i] = sk_h3d_vertices[base_vert.original_index]
+            
             if textual:
                 f.write("%s\n" % shape_key.name)
-                # Write the triangles
-                write_triangles(f, textual, sk_h3d_triangles)
-                # Write the vertices
-                write_vertices(f, textual, sk_h3d_vertices, False, False)    
+            else:
+                binary_write_string(f, shape_key.name)
+            write_vertices(f, textual, final_sk_h3d_vertices, False, False)
             
     # Handle the materials
     if textual:
@@ -626,12 +630,12 @@ class Hobby3dExporter(Operator, ExportHelper):
             name="Shape Keys",
             description="How to handle Shape Keys",
             items=(('1', "Export",
-                    "Export all Shape Keys, duplicated vertex removal will be disabled on groups that have shape keys"),
+                    "Export all Shape Keys"),
                    ('2', "Apply",
                     "Applies current shape keys transformation to base exported mesh (and doesn't export them)"),
                    ('3', "Ignore",
                     "Ignore shape keys (sets their value to 0 before exporting)")),
-            default='3',
+            default='1',
             )
 
     def execute(self, context):
