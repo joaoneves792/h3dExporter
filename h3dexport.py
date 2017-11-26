@@ -428,6 +428,8 @@ def export_h3d(operator, file_path, textual, no_duplicates, num_bones, export_ar
     else:
         f.write(struct.pack("<1i", len(groups)))
 
+    groups.sort(key=lambda g: g.name.lower());
+
     for group in groups:
         # Write the name of the group and its material
         if textual:
@@ -500,6 +502,8 @@ def export_h3d(operator, file_path, textual, no_duplicates, num_bones, export_ar
         
     for material in materials:
         texture_image = ""
+        if material.texture_slots[0] is None:
+            raise Exception("Material " + material.name + "has no texture!")
         texture = material.texture_slots[0].texture
         if texture is not None:
             if texture.image is not None:
