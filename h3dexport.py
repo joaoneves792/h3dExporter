@@ -233,7 +233,7 @@ def write_vertices(f, textual, vertices, export_uv=True, export_bones=True):
                 for bone in vertex.bones:
                     line = "b {j} {w}\n"
                     line = line.format(j=bone[0], w=bone[1])
-                f.write(line)
+                    f.write(line)
         else:
             f.write(struct.pack("<3f", *vertex.position))
             f.write(struct.pack("<3f", *vertex.normal))
