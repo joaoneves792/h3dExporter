@@ -273,9 +273,12 @@ def create_vertices_list(group, num_bones=3, export_armatures=True):
         if weight_sum > 0:
             for bone in bones:
                 bone[1] = bone[1]/weight_sum    
-        
-        uv = (group.mesh.uv_layers.active.data[i].uv[0], 1-group.mesh.uv_layers.active.data[i].uv[1])
-        
+                
+        if(group.mesh.uv_layers.active is not None):
+            uv = (group.mesh.uv_layers.active.data[i].uv[0], 1-group.mesh.uv_layers.active.data[i].uv[1])
+        else:
+            uv = (0, 0)
+            
         h3d_vertex = H3dVertex(vertices[loop.vertex_index].co, loop.normal, uv, bones, i)
         h3d_vertices.append(h3d_vertex)
         
@@ -502,11 +505,12 @@ def export_h3d(operator, file_path, textual, no_duplicates, num_bones, export_ar
         
     for material in materials:
         texture_image = ""
-        if material.texture_slots[0] is None:
-            raise Exception("Material " + material.name + "has no texture!")
-        texture = material.texture_slots[0].texture
+        texture = None
+        if material.texture_slots[0] is not None:
+            #raise Exception("Material " + material.name + "has no texture!")
+            texture = material.texture_slots[0].texture
         if texture is not None:
-            if texture.image is not None:
+            if hasattr(texture, 'image'):
                 if texture.image.filepath is not None:
                     texture_image = bpy.path.basename(texture.image.filepath)
         
