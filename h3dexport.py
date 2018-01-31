@@ -504,15 +504,18 @@ def export_h3d(operator, file_path, textual, no_duplicates, num_bones, export_ar
         f.write(struct.pack("<1i", len(materials)))
         
     for material in materials:
-        texture_image = ""
-        texture = None
-        if material.texture_slots[0] is not None:
-            #raise Exception("Material " + material.name + "has no texture!")
-            texture = material.texture_slots[0].texture
-        if texture is not None:
-            if hasattr(texture, 'image'):
-                if texture.image.filepath is not None:
-                    texture_image = bpy.path.basename(texture.image.filepath)
+        texture_images = []
+        #textures = []
+        #material.texture_slots.foreach_get("texture", textures) #this would be neat but doesnt work!
+        for t in range(10):
+            texture_slot = material.texture_slots[t]
+            if texture_slot is None:
+                continue
+            texture = texture_slot.texture
+            if texture is not None:
+                if hasattr(texture, 'image'):
+                    if texture.image.filepath is not None:
+                        texture_images.append(bpy.path.basename(texture.image.filepath))
         
         ambient = material.ambient*(51/255)  # Hackish to say the least
         
@@ -537,7 +540,9 @@ def export_h3d(operator, file_path, textual, no_duplicates, num_bones, export_ar
         transparency = material.alpha
         
         if textual:
-            f.write("%s\n" % texture_image)
+            f.write("%d\n" % len(texture_images))
+            for texture in texture_images:
+                f.write("%s\n" % texture)
             f.write("a %f\n" % ambient)
             line = "d {d[0]} {d[1]} {d[2]}\n"
             line = line.format(d=diffuse)
@@ -552,7 +557,9 @@ def export_h3d(operator, file_path, textual, no_duplicates, num_bones, export_ar
             f.write("t %f\n" % transparency)
             
         else:
-            binary_write_string(f, texture_image)
+            f.write(struct.pack("<1i", len(texture_images)))
+            for texture in texture_images:
+                binary_write_string(f, texture)
             f.write(struct.pack("<1f", ambient))
             f.write(struct.pack("<3f", *diffuse))
             f.write(struct.pack("<3f", *specular))
