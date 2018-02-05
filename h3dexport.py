@@ -4,7 +4,7 @@ import bmesh
 from bpy_extras.io_utils import ExportHelper
 from bpy.props import StringProperty, BoolProperty, EnumProperty
 from bpy.types import Operator
-from mathutils import Matrix
+from mathutils import Matrix, Vector
 from math import pi
 from collections import OrderedDict
 
@@ -22,6 +22,14 @@ def is_keyframe(ob, frame, data_path, array_index=-1):
 bpy.types.Object.is_keyframe = is_keyframe
 ###############################################
 
+def vec3_sub(u, v):
+    return [u[0]-v[0], u[1]-v[1], u[2]-v[2]]
+
+def vec3_mul_scalar(vec, s):
+    return [vec[0]*s, vec[1]*s, vec[2]*s]
+
+def vec3_average(u, v):
+    return [(u[0]+v[0]/2), (u[1]+v[1]/2), (u[1]+v[1]/2)]
 
 class H3dMesh:
     def __init__(self):
@@ -73,6 +81,8 @@ class H3dVertex:
         self.bones = bones
         self.index = index
         self.original_index = index
+        self.tangent = []
+        self.bitangent = []
         
         
 class H3dTriangle:
@@ -109,7 +119,10 @@ def get_unique_vertices(vertices, triangles):
             new_index += 1
             helper_dict[key] = vertex
         else:
-            vertex.index = helper_dict[key].index
+            existing_v = helper_dict[key]
+            vertex.index = existing_v.index
+            existing_v.tangent = (existing_v.tangent + vertex.tangent)/2.0
+            existing_v.bitangent = (existing_v.bitangent + vertex.bitangent)/2.0
     
     new_vertices = list(helper_dict.values())
     
@@ -225,8 +238,14 @@ def write_vertices(f, textual, vertices, export_uv=True, export_bones=True):
             line = "n {n.x} {n.y} {n.z}\n"
             line = line.format(n=vertex.normal)
             f.write(line)
+            line = "t {t.x} {t.y} {t.z}\n"
+            line = line.format(t=vertex.tangent)
+            f.write(line)
+            line = "bt {bt.x} {bt.y} {bt.z}\n"
+            line = line.format(bt=vertex.bitangent)
+            f.write(line)
             if export_uv:
-                line = "t {t[0]} {t[1]}\n"
+                line = "t {t.x} {t.y}\n"
                 line = line.format(t=vertex.uv)
                 f.write(line)
             if export_bones:
@@ -237,6 +256,8 @@ def write_vertices(f, textual, vertices, export_uv=True, export_bones=True):
         else:
             f.write(struct.pack("<3f", *vertex.position))
             f.write(struct.pack("<3f", *vertex.normal))
+            f.write(struct.pack("<3f", *vertex.tangent))
+            f.write(struct.pack("<3f", *vertex.bitangent))
             if export_uv:
                 f.write(struct.pack("<2f", *vertex.uv))
             if export_bones:
@@ -275,9 +296,9 @@ def create_vertices_list(group, num_bones=3, export_armatures=True):
                 bone[1] = bone[1]/weight_sum    
                 
         if(group.mesh.uv_layers.active is not None):
-            uv = (group.mesh.uv_layers.active.data[i].uv[0], 1-group.mesh.uv_layers.active.data[i].uv[1])
+            uv = Vector([group.mesh.uv_layers.active.data[i].uv[0], 1-group.mesh.uv_layers.active.data[i].uv[1]])
         else:
-            uv = (0, 0)
+            uv = Vector([0, 0])
             
         h3d_vertex = H3dVertex(vertices[loop.vertex_index].co, loop.normal, uv, bones, i)
         h3d_vertices.append(h3d_vertex)
@@ -293,6 +314,32 @@ def generate_h3d_tri_verts(group, num_bones, export_armatures, no_duplicates):
         h3d_triangles.append(h3d_triangle)
     # Get the vertexes
     h3d_vertices = create_vertices_list(group, num_bones, export_armatures)
+
+    #Compute tangents and bitangents
+    for tri in h3d_triangles:
+        v0 = h3d_vertices[tri.indices[0]]
+        v1 = h3d_vertices[tri.indices[1]]
+        v2 = h3d_vertices[tri.indices[2]]
+
+        d_pos1 = v1.position - v0.position
+        d_pos2 = v2.position - v0.position
+        d_uv1 = v1.uv - v0.uv
+        d_uv2 = v2.uv - v0.uv
+        
+        # r = 1.0 / (d_uv1.x * d_uv2.y - d_uv1.y * d_uv2.x)
+        tangent = ( (d_pos1 * d_uv2.y) - (d_pos2 * d_uv1.y) )  # * r
+        bitangent = ( (d_pos2 * d_uv1.x) - (d_pos1 * d_uv2.x) )  # *r
+        
+        tangent.normalize()
+        bitangent.normalize()
+        
+        v0.tangent = tangent
+        v1.tangent = tangent
+        v2.tangent = tangent        
+        v0.bitangent = bitangent
+        v1.bitangent = bitangent
+        v2.bitangent = bitangent
+
 
     if no_duplicates:
         h3d_vertices = get_unique_vertices(h3d_vertices, h3d_triangles)
