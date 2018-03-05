@@ -299,12 +299,34 @@ def create_vertices_list(group, num_bones=3, export_armatures=True):
             uv = Vector([group.mesh.uv_layers.active.data[i].uv[0], 1-group.mesh.uv_layers.active.data[i].uv[1]])
         else:
             uv = Vector([0, 0])
-            
-        h3d_vertex = H3dVertex(vertices[loop.vertex_index].co, loop.normal, uv, bones, i)
+        
+        h3d_vertex = H3dVertex(vertices[loop.vertex_index].co, vertices[loop.vertex_index].normal, uv, bones, i)
+        # h3d_vertex = H3dVertex(vertices[loop.vertex_index].co, loop.normal, uv, bones, i)
+
         h3d_vertices.append(h3d_vertex)
         
     return h3d_vertices
 
+def check_clockwise_order(tri, h3d_vertices):
+        v0 = h3d_vertices[tri.indices[0]]
+        v1 = h3d_vertices[tri.indices[1]]
+        v2 = h3d_vertices[tri.indices[2]]
+
+        u = v1.position - v0.position
+        v = v2.position - v0.position
+        
+        #Check for clockwise direction, if not invert face
+        normal = u.cross(v)
+        normal.normalize()
+        face_normal = ((v0.normal+v1.normal+v2.normal)/3.0)
+        face_normal.normalize()
+        v0.normal = normal
+        v1.normal = normal
+        v2.normal = normal
+        if normal.dot(face_normal) <= 0:
+            tmp = tri.indices[0]
+            tri.indices[0] = tri.indices[2]
+            tri.indices[2] = tmp
 
 def generate_h3d_tri_verts(group, num_bones, export_armatures, no_duplicates):
     # Get the triangles
@@ -317,6 +339,7 @@ def generate_h3d_tri_verts(group, num_bones, export_armatures, no_duplicates):
 
     #Compute tangents and bitangents
     for tri in h3d_triangles:
+        check_clockwise_order(tri, h3d_vertices)
         v0 = h3d_vertices[tri.indices[0]]
         v1 = h3d_vertices[tri.indices[1]]
         v2 = h3d_vertices[tri.indices[2]]
@@ -383,7 +406,8 @@ def group_to_h3d_mesh(scene, obj, export_armatures):
                     
     mesh.transform(correction_matrix*world_matrix)
     mesh_triangulate(mesh)
-    mesh.calc_normals_split()
+    mesh.update()
+    #mesh.calc_normals_split()
     h3d_mesh.mesh = mesh
             
     if export_armatures:
