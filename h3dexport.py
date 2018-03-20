@@ -301,7 +301,7 @@ def create_vertices_list(group, num_bones=3, export_armatures=True):
             uv = Vector([0, 0])
         
         h3d_vertex = H3dVertex(vertices[loop.vertex_index].co, vertices[loop.vertex_index].normal, uv, bones, i)
-        # h3d_vertex = H3dVertex(vertices[loop.vertex_index].co, loop.normal, uv, bones, i)
+        #h3d_vertex = H3dVertex(vertices[loop.vertex_index].co, loop.normal, uv, bones, i)
 
         h3d_vertices.append(h3d_vertex)
         
@@ -339,7 +339,7 @@ def generate_h3d_tri_verts(group, num_bones, export_armatures, no_duplicates):
 
     #Compute tangents and bitangents
     for tri in h3d_triangles:
-        check_clockwise_order(tri, h3d_vertices)
+        #check_clockwise_order(tri, h3d_vertices)
         v0 = h3d_vertices[tri.indices[0]]
         v1 = h3d_vertices[tri.indices[1]]
         v2 = h3d_vertices[tri.indices[2]]
