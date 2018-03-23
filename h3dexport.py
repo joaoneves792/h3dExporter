@@ -224,7 +224,7 @@ def find_joint_by_name(armature, name):
     return armature.joints[armature.joints_dic[name].index]
 
 
-def write_vertices(f, textual, vertices, export_uv=True, export_bones=True):
+def write_vertices(f, textual, vertices, export_uv=True, export_bones=True, export_normals=True):
     if textual:
         f.write("%d\n" % len(vertices))
     else:
@@ -235,15 +235,16 @@ def write_vertices(f, textual, vertices, export_uv=True, export_bones=True):
             line = "v {v.x} {v.y} {v.z}\n"
             line = line.format(v=vertex.position)
             f.write(line)
-            line = "n {n.x} {n.y} {n.z}\n"
-            line = line.format(n=vertex.normal)
-            f.write(line)
-            line = "t {t.x} {t.y} {t.z}\n"
-            line = line.format(t=vertex.tangent)
-            f.write(line)
-            line = "bt {bt.x} {bt.y} {bt.z}\n"
-            line = line.format(bt=vertex.bitangent)
-            f.write(line)
+            if export_normals:
+                line = "n {n.x} {n.y} {n.z}\n"
+                line = line.format(n=vertex.normal)
+                f.write(line)
+                line = "t {t.x} {t.y} {t.z}\n"
+                line = line.format(t=vertex.tangent)
+                f.write(line)
+                line = "bt {bt.x} {bt.y} {bt.z}\n"
+                line = line.format(bt=vertex.bitangent)
+                f.write(line)
             if export_uv:
                 line = "t {t.x} {t.y}\n"
                 line = line.format(t=vertex.uv)
@@ -255,9 +256,10 @@ def write_vertices(f, textual, vertices, export_uv=True, export_bones=True):
                     f.write(line)
         else:
             f.write(struct.pack("<3f", *vertex.position))
-            f.write(struct.pack("<3f", *vertex.normal))
-            f.write(struct.pack("<3f", *vertex.tangent))
-            f.write(struct.pack("<3f", *vertex.bitangent))
+            if export_normals:
+                f.write(struct.pack("<3f", *vertex.normal))
+                f.write(struct.pack("<3f", *vertex.tangent))
+                f.write(struct.pack("<3f", *vertex.bitangent))
             if export_uv:
                 f.write(struct.pack("<2f", *vertex.uv))
             if export_bones:
@@ -509,7 +511,7 @@ def export_h3d(operator, file_path, textual, no_duplicates, num_bones, export_ar
         if textual:
             f.write("%s\n" % group.name)
         else:
-            binary_write_string(f, group.mesh.name)
+            binary_write_string(f, group.name)
         material = group.mesh.materials[0]
         material = bpy.data.materials[material.name]
         if material is None:
@@ -566,7 +568,7 @@ def export_h3d(operator, file_path, textual, no_duplicates, num_bones, export_ar
                 f.write("%s\n" % shape_key.name)
             else:
                 binary_write_string(f, shape_key.name)
-            write_vertices(f, textual, final_sk_h3d_vertices, False, False)
+            write_vertices(f, textual, final_sk_h3d_vertices, False, False, False)
             
     # Handle the materials
     if textual:
