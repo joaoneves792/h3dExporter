@@ -148,6 +148,7 @@ def fill_keyframes(scene, h3d_armature):
             keyframe.frame = f
             matrix = blender_armature.convert_space(pose_bone=pbone, matrix=pbone.matrix,
                                                     from_space='POSE', to_space='LOCAL')
+                                                    
             keyframe.position = matrix.to_translation()
             keyframe.rotation = matrix.to_euler("XYZ")
 
@@ -309,28 +310,7 @@ def create_vertices_list(group, num_bones=3, export_armatures=True):
         
     return h3d_vertices
 
-def check_clockwise_order(tri, h3d_vertices):
-        v0 = h3d_vertices[tri.indices[0]]
-        v1 = h3d_vertices[tri.indices[1]]
-        v2 = h3d_vertices[tri.indices[2]]
-
-        u = v1.position - v0.position
-        v = v2.position - v0.position
-        
-        #Check for clockwise direction, if not invert face
-        normal = u.cross(v)
-        normal.normalize()
-        face_normal = ((v0.normal+v1.normal+v2.normal)/3.0)
-        face_normal.normalize()
-        v0.normal = normal
-        v1.normal = normal
-        v2.normal = normal
-        if normal.dot(face_normal) <= 0:
-            tmp = tri.indices[0]
-            tri.indices[0] = tri.indices[2]
-            tri.indices[2] = tmp
-
-def generate_h3d_tri_verts(group, num_bones, export_armatures, no_duplicates):
+def generate_h3d_tri_verts(group, num_bones, export_armatures, no_duplicates, flat=False):
     # Get the triangles
     h3d_triangles = []
     for triangle in group.mesh.polygons:
@@ -341,7 +321,6 @@ def generate_h3d_tri_verts(group, num_bones, export_armatures, no_duplicates):
 
     #Compute tangents and bitangents
     for tri in h3d_triangles:
-        #check_clockwise_order(tri, h3d_vertices)
         v0 = h3d_vertices[tri.indices[0]]
         v1 = h3d_vertices[tri.indices[1]]
         v2 = h3d_vertices[tri.indices[2]]
@@ -365,6 +344,12 @@ def generate_h3d_tri_verts(group, num_bones, export_armatures, no_duplicates):
         v1.bitangent = bitangent
         v2.bitangent = bitangent
 
+        if flat:
+            normal = d_pos1.cross(d_pos2)
+            normal.normalize()
+            v0.normal = normal
+            v1.normal = normal
+            v2.normal = normal
 
     if no_duplicates:
         h3d_vertices = get_unique_vertices(h3d_vertices, h3d_triangles)
@@ -399,7 +384,6 @@ def group_to_h3d_mesh(scene, obj, export_armatures):
     for modifier in obj.modifiers:
         if modifier.type == 'ARMATURE':
             modifier.show_render = False
-            
     mesh = obj.to_mesh(scene, True, 'RENDER')
     
     for modifier in obj.modifiers:
@@ -422,7 +406,7 @@ def group_to_h3d_mesh(scene, obj, export_armatures):
 
 
 def export_h3d(operator, file_path, textual, no_duplicates, num_bones, export_armatures, export_keyframes,
-               shape_keys_behaviour):
+               shape_keys_behaviour, flat_shading):
     export_shape_keys = False
     apply_shape_keys = False
 
@@ -528,7 +512,7 @@ def export_h3d(operator, file_path, textual, no_duplicates, num_bones, export_ar
             f.write(struct.pack("<1i", material_index))
             
         # Now we get the triangles and vertices
-        h3d_triangles, h3d_vertices = generate_h3d_tri_verts(group, num_bones, export_armatures, no_duplicates)
+        h3d_triangles, h3d_vertices = generate_h3d_tri_verts(group, num_bones, export_armatures, no_duplicates, flat_shading)
         
         # Write the triangles
         write_triangles(f, textual, h3d_triangles)
@@ -557,7 +541,7 @@ def export_h3d(operator, file_path, textual, no_duplicates, num_bones, export_ar
 
         for shape_key in group.h3d_shape_keys:
             sk_h3d_triangles, sk_h3d_vertices = generate_h3d_tri_verts(shape_key, num_bones=0,
-                                                                       export_armatures=False, no_duplicates=False)
+                                                                       export_armatures=False, no_duplicates=False, flat=flat_shading)
             
             #Elininate duplicates based on the duplicate removal from the basis
             final_sk_h3d_vertices = h3d_vertices[:]
@@ -725,10 +709,15 @@ class Hobby3dExporter(Operator, ExportHelper):
                     "Ignore shape keys (sets their value to 0 before exporting)")),
             default='1',
             )
+    #flat = BoolProperty(
+    #    name="Flat shading",
+    #    description="Export flat normals (to use with TBN)",
+    #    default=False,
+    #    )
 
     def execute(self, context):
         return export_h3d(self, self.filepath, self.textual, self.no_duplicates, int(self.num_bones), self.armatures,
-                          self.keyframes, self.shape_keys)
+                          self.keyframes, self.shape_keys, False)
 
 
 # Only needed if you want to add into a dynamic menu
